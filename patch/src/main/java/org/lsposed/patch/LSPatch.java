@@ -12,6 +12,7 @@ import com.android.tools.build.apkzlib.zip.AlignmentRules;
 import com.android.tools.build.apkzlib.zip.StoredEntry;
 import com.android.tools.build.apkzlib.zip.ZFile;
 import com.android.tools.build.apkzlib.zip.ZFileOptions;
+import com.beust.ah.A;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import com.beust.jcommander.ParameterException;
@@ -178,11 +179,14 @@ public class LSPatch {
         logger.i("Parsing original apk...");
 
         try (var dstZFile = ZFile.openReadWrite(outputFile, Z_FILE_OPTIONS);
+             // 原始 apk 存入生成 apk asseets 目录，并且更名为 origin.apk
              var srcZFile = dstZFile.addNestedZip((ignore) -> ORIGINAL_APK_ASSET_PATH, srcApkFile, false)) {
 
             // sign apk
             try {
                 var keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+                // -k 参数动态指定
+                // 使用方式 -k keystorePath keystorePassword keystoreAlias keystoreAliasPassword
                 if (keystoreArgs.get(0) == null) {
                     logger.i("Register apk signer with default keystore...");
                     try (var is = getClass().getClassLoader().getResourceAsStream("assets/keystore")) {
@@ -194,7 +198,15 @@ public class LSPatch {
                         keyStore.load(is, keystoreArgs.get(1).toCharArray());
                     }
                 }
+                // 设置密码
                 var entry = (KeyStore.PrivateKeyEntry) keyStore.getEntry(keystoreArgs.get(2), new KeyStore.PasswordProtection(keystoreArgs.get(3).toCharArray()));
+                /*
+                设置签名选项 apkzlib 标准用法
+                minSdkVersion: 28 最小的 sdk 版本
+                v2SigningEnabled: true 是否启用 v2 签名
+                certificates: (X509Certificate[]) entry.getCertificateChain() 证书链
+                key: entry.getPrivateKey() 私钥
+                 */
                 new SigningExtension(SigningOptions.builder()
                         .setMinSdkVersion(28)
                         .setV2SigningEnabled(true)
@@ -206,6 +218,7 @@ public class LSPatch {
             }
 
             String originalSignature = null;
+            // sigbypassLevel 为 0 时，不进行签名绕过，否则获取原始签名，用于绕过签名验证
             if (sigbypassLevel > 0) {
                 originalSignature  = ApkSignatureHelper.getApkSignInfo(srcApkFile.getAbsolutePath());
                 if (originalSignature == null || originalSignature.isEmpty()) {
@@ -219,6 +232,13 @@ public class LSPatch {
             if (manifestEntry == null)
                 throw new PatchError("Provided file is not a valid apk");
 
+            /*
+            AppComponentFactory 的主要作用是根据配置文件（AndroidManifest.xml）中声明的组件信息，
+            实例化对应的组件对象，并且为它们提供所需的上下文环境。
+            这样，当应用程序启动时，它可以根据需要创建和初始化必要的组件
+            往往在 AndroidManifest.xml 中还有配套的 activity、service、receiver、provider 等标签
+            这里设置的 Factory 为 org.lsposed.lspatch.metaloader.LSPAppComponentFactoryStub
+             */
             // parse the app appComponentFactory full name from the manifest file
             final String appComponentFactory;
             int minSdkVersion;
@@ -237,6 +257,7 @@ public class LSPatch {
             final var config = new PatchConfig(useManager, debuggableFlag, overrideVersionCode, sigbypassLevel, originalSignature, appComponentFactory);
             final var configBytes = new Gson().toJson(config).getBytes(StandardCharsets.UTF_8);
             final var metadata = Base64.getEncoder().encodeToString(configBytes);
+            // 主要修改 SDK 版本，debuggable 标志，appComponentFactory，metadata
             try (var is = new ByteArrayInputStream(modifyManifestFile(manifestEntry.open(), metadata, minSdkVersion))) {
                 dstZFile.add(ANDROID_MANIFEST_XML, is);
             } catch (Throwable e) {
@@ -252,6 +273,7 @@ public class LSPatch {
             }
 
             logger.i("Adding metaloader dex...");
+            // metaloader.dex -> classes.dex
             try (var is = getClass().getClassLoader().getResourceAsStream(Constants.META_LOADER_DEX_ASSET_PATH)) {
                 dstZFile.add("classes.dex", is);
             } catch (Throwable e) {
@@ -270,6 +292,13 @@ public class LSPatch {
                 // copy so and dex files into the unzipped apk
                 // do not put liblspatch.so into apk!lib because x86 native bridge causes crash
                 for (String arch : ARCHES) {
+                    // TODO 这里手动写死了
+                    // 如果 manager 编译失败，只编译 patch-loader 就够了，并且只是编译
+//                    ArrayList<String> arches = new ArrayList<>();
+//                    arches.add("armeabi-v7a");
+//                    arches.add("arm64-v8a");
+//                    if (!arches.contains(arch)) continue;
+
                     String entryName = "assets/lspatch/so/" + arch + "/liblspatch.so";
                     try (var is = getClass().getClassLoader().getResourceAsStream(entryName)) {
                         dstZFile.add(entryName, is, false); // no compress for so
@@ -289,6 +318,7 @@ public class LSPatch {
 
             for (StoredEntry entry : srcZFile.entries()) {
                 String name = entry.getCentralDirectoryHeader().getName();
+                // 除了 dex AndroidManifest.xml 秘钥信息 其他的文件原样复制
                 if (name.startsWith("classes") && name.endsWith(".dex")) continue;
                 if (dstZFile.get(name) != null) continue;
                 if (name.equals("AndroidManifest.xml")) continue;
@@ -328,6 +358,7 @@ public class LSPatch {
         if (minSdkVersion < 28)
             property.addUsesSdkAttribute(new AttributeItem(NodeValue.UsesSDK.MIN_SDK_VERSION, "28"));
         property.addApplicationAttribute(new AttributeItem(NodeValue.Application.DEBUGGABLE, debuggableFlag));
+        // 关键位置，入口类
         property.addApplicationAttribute(new AttributeItem("appComponentFactory", PROXY_APP_COMPONENT_FACTORY));
         property.addMetaData(new ModificationProperty.MetaData("lspatch", metadata));
         // TODO: replace query_all with queries -> manager

@@ -35,6 +35,22 @@ using namespace lsplant;
 namespace lspd {
 
     void PatchLoader::LoadDex(JNIEnv* env, Context::PreloadedDex&& dex) {
+        /*
+         * 转化为 Java 逻辑
+         * Class activityThreadClazz = Class.forName("android.app.ActivityThread");
+         * Class appBindDataClazz = Class.forName("android.app.ActivityThread$AppBindData");
+         * Class loadedApkClazz = Class.forName("android.app.LoadedApk");
+         *
+         * Method currentActivityThreadMethod = activityThreadClazz.getDeclaredMethod("currentActivityThread");
+         * Method getClassLoaderMethod = loadedApkClazz.getDeclaredMethod("getClassLoader");
+         * Field mBoundApplicationField = activityThreadClazz.getDeclaredField("mBoundApplication");
+         * Field infoField = appBindDataClazz.getDeclaredField("info");
+         *
+         * Object activityThread = currentActivityThreadMethod.invoke(null);
+         * Object mBoundApplication = mBoundApplicationField.get(activityThread);
+         * Object info = infoField.get(mBoundApplication);
+         * Object stubClassLoader = getClassLoaderMethod.invoke(info);
+         */
         auto class_activity_thread = JNI_FindClass(env, "android/app/ActivityThread");
         auto class_activity_thread_app_bind_data = JNI_FindClass(env, "android/app/ActivityThread$AppBindData");
         auto class_loaded_apk = JNI_FindClass(env, "android/app/LoadedApk");
@@ -92,6 +108,7 @@ namespace lspd {
 
     void PatchLoader::Load(JNIEnv* env) {
         InitSymbolCache(nullptr);
+        // 常见 lsplant 初始化
         lsplant::InitInfo initInfo {
                 .inline_hooker = [](auto t, auto r) {
                     void* bk = nullptr;
@@ -108,6 +125,7 @@ namespace lspd {
                 },
         };
 
+        // 这里是通过固定的名称去找启动 App，所以这两个就无法混淆
         auto stub = JNI_FindClass(env, "org/lsposed/lspatch/metaloader/LSPAppComponentFactoryStub");
         auto dex_field = JNI_GetStaticFieldID(env, stub, "dex", "[B");
 
@@ -120,6 +138,7 @@ namespace lspd {
 
         GetArt(true);
 
+        // org.lsposed.lspatch.loader.LSPApplication#onLoad
         SetupEntryClass(env);
         FindAndCall(env, "onLoad", "()V");
     }

@@ -95,20 +95,31 @@ public class ApkSignatureHelper {
     }
 
     private static String getApkSignV2(String apkFilePath) throws IOException {
-        try (RandomAccessFile apk = new RandomAccessFile(apkFilePath, "r")) {
+        try (
+                // Create a RandomAccessFile instance to read from the APK file
+                RandomAccessFile apk = new RandomAccessFile(apkFilePath, "r")
+        ) {
+            // Allocate a ByteBuffer to hold data read from the APK file
             ByteBuffer buffer = ByteBuffer.allocate(0x10);
             buffer.order(ByteOrder.LITTLE_ENDIAN);
 
+            // Seek to the position in the APK file where the APK Signing Block starts
             apk.seek(apk.length() - 0x6);
+            // Read the APK Signing Block into the buffer
             apk.readFully(buffer.array(), 0x0, 0x6);
+            // Get the offset of the APK Signing Block
             int offset = buffer.getInt();
+            // Check if the APK file is a ZIP file
             if (buffer.getShort() != 0) {
                 throw new UnsupportedEncodingException("no zip");
             }
 
+            // Seek to the position in the APK file where the APK Signing Block magic starts
             apk.seek(offset - 0x10);
+            // Read the APK Signing Block magic into the buffer
             apk.readFully(buffer.array(), 0x0, 0x10);
 
+            // Check if the APK Signing Block magic matches the expected magic
             if (!Arrays.equals(buffer.array(), APK_V2_MAGIC)) {
                 throw new UnsupportedEncodingException("no apk v2");
             }
@@ -119,35 +130,40 @@ public class ApkSignatureHelper {
             buffer.rewind();
             int size = (int) buffer.getLong();
 
+            // Allocate a ByteBuffer to hold the APK Signing Block
             ByteBuffer block = ByteBuffer.allocate(size + 0x8);
             block.order(ByteOrder.LITTLE_ENDIAN);
             apk.seek(offset - block.capacity());
             apk.readFully(block.array(), 0x0, block.capacity());
 
+            // Check if the size of the APK Signing Block matches the expected size
             if (size != block.getLong()) {
                 throw new UnsupportedEncodingException("no apk v2");
             }
 
+            // Parse the APK Signing Block to extract the certificate
             while (block.remaining() > 24) {
                 size = (int) block.getLong();
                 if (block.getInt() == 0x7109871a) {
-                    // signer-sequence length, signer length, signed data length
+                    // Skip the signer-sequence length, signer length, and signed data length
                     block.position(block.position() + 12);
-                    size = block.getInt(); // digests-sequence length
+                    size = block.getInt(); // Get the digests-sequence length
 
-                    // digests, certificates length
+                    // Skip the digests and get the certificate length
                     block.position(block.position() + size + 0x4);
 
-                    size = block.getInt(); // certificate length
+                    size = block.getInt(); // Get the certificate length
                     break;
                 } else {
                     block.position(block.position() + size - 0x4);
                 }
             }
 
+            // Extract the certificate
             byte[] certificate = new byte[size];
             block.get(certificate);
 
+            // Return the certificate as a string
             return new String(toChars(certificate));
         }
     }
